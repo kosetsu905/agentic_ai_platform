@@ -25,7 +25,7 @@ def load_pdf(path):
 
 
 # =========================
-# 2. Chunk
+# 2. Chunk text into smaller segments
 # =========================
 def chunk_text(text, chunk_size=500, overlap=100):
     chunks = []
@@ -35,7 +35,7 @@ def chunk_text(text, chunk_size=500, overlap=100):
         end = start + chunk_size
         chunk = text[start:end]
         chunks.append(chunk)
-        start += chunk_size - overlap
+        start += chunk_size - overlap  # move forward with overlap
 
     return chunks
 
@@ -59,21 +59,23 @@ def chunk_documents(docs):
 
 
 # =========================
-# 3. Embedding + Store
+# 3. Generate embeddings and store in vector DB
 # =========================
 def main():
-    # embedding model（本地）
+    # Load embedding model
     model = SentenceTransformer("all-MiniLM-L6-v2")
 
-    # vector DB（本地）
+    # Initialize vector database
     client = chromadb.Client()
     collection = client.get_or_create_collection(name="medical_docs")
 
     all_chunks = []
 
+    # Resolve project root and data directory
     BASE_DIR = os.path.dirname(os.path.dirname(__file__))
     DATA_DIR = os.path.join(BASE_DIR, "data")
 
+    # Process all PDF files in data folder
     for file in os.listdir(DATA_DIR):
         if file.endswith(".pdf"):
             path = os.path.join(DATA_DIR, file)
@@ -81,11 +83,14 @@ def main():
             chunks = chunk_documents(docs)
             all_chunks.extend(chunks)
 
+    # Extract content and metadata
     texts = [c["content"] for c in all_chunks]
     metadatas = [c["metadata"] for c in all_chunks]
 
+    # Convert text to embeddings
     embeddings = model.encode(texts)
 
+    # Store in vector database
     collection.add(
         documents=texts,
         embeddings=embeddings,

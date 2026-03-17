@@ -4,23 +4,25 @@ import subprocess
 
 
 # =========================
-# 1. 初始化
+# 1. Initialization
 # =========================
 
-# embedding model（和 ingest 一致）
+# Load embedding model (must match ingest step)
 model = SentenceTransformer("all-MiniLM-L6-v2")
 
-# 向量数据库
+# Connect to vector database
 client = chromadb.Client()
 collection = client.get_collection(name="medical_docs")
 
 
 # =========================
-# 2. 检索
+# 2. Retrieve relevant documents
 # =========================
 def retrieve(query, k=5):
+    # Convert query into embedding
     query_embedding = model.encode([query])
 
+    # Perform similarity search
     results = collection.query(
         query_embeddings=query_embedding,
         n_results=k
@@ -33,7 +35,7 @@ def retrieve(query, k=5):
 
 
 # =========================
-# 3. 调用 Ollama
+# 3. Call local LLM via Ollama
 # =========================
 def ask_llm(prompt):
     result = subprocess.run(
@@ -46,13 +48,15 @@ def ask_llm(prompt):
 
 
 # =========================
-# 4. RAG 主逻辑
+# 4. RAG pipeline
 # =========================
 def rag_query(query):
     docs, metas = retrieve(query)
 
+    # Combine retrieved chunks into context
     context = "\n\n".join(docs)
 
+    # Prompt engineering
     prompt = f"""
 You are a medical assistant. Answer the question based ONLY on the context below.
 
@@ -70,7 +74,7 @@ Answer:
 
 
 # =========================
-# 5. CLI
+# 5. CLI interface
 # =========================
 if __name__ == "__main__":
     while True:
