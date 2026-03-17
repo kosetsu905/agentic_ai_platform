@@ -71,9 +71,12 @@ def main():
 
     all_chunks = []
 
-    for file in os.listdir("data"):
+    BASE_DIR = os.path.dirname(os.path.dirname(__file__))
+    DATA_DIR = os.path.join(BASE_DIR, "data")
+
+    for file in os.listdir(DATA_DIR):
         if file.endswith(".pdf"):
-            path = os.path.join("data", file)
+            path = os.path.join(DATA_DIR, file)
             docs = load_pdf(path)
             chunks = chunk_documents(docs)
             all_chunks.extend(chunks)
