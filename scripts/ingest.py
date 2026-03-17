@@ -1,11 +1,9 @@
 import os
-import fitz  # PyMuPDF
+import fitz
 from sentence_transformers import SentenceTransformer
 import chromadb
 
-# =========================
-# 1. Load PDF
-# =========================
+
 def load_pdf(path):
     docs = []
     pdf = fitz.open(path)
@@ -24,18 +22,14 @@ def load_pdf(path):
     return docs
 
 
-# =========================
-# 2. Chunk text into smaller segments
-# =========================
 def chunk_text(text, chunk_size=500, overlap=100):
     chunks = []
     start = 0
 
     while start < len(text):
         end = start + chunk_size
-        chunk = text[start:end]
-        chunks.append(chunk)
-        start += chunk_size - overlap  # move forward with overlap
+        chunks.append(text[start:end])
+        start += chunk_size - overlap
 
     return chunks
 
@@ -45,7 +39,6 @@ def chunk_documents(docs):
 
     for doc in docs:
         chunks = chunk_text(doc["content"])
-
         for i, chunk in enumerate(chunks):
             chunked.append({
                 "content": chunk,
@@ -58,24 +51,21 @@ def chunk_documents(docs):
     return chunked
 
 
-# =========================
-# 3. Generate embeddings and store in vector DB
-# =========================
 def main():
-    # Load embedding model
     model = SentenceTransformer("all-MiniLM-L6-v2")
 
-    # Initialize vector database
-    client = chromadb.Client()
+    BASE_DIR = os.path.dirname(os.path.dirname(__file__))
+    DATA_DIR = os.path.join(BASE_DIR, "data")
+    DB_DIR = os.path.join(BASE_DIR, "chroma_db")
+
+    print("DB PATH:", DB_DIR)
+
+    client = chromadb.PersistentClient(path=DB_DIR)
+
     collection = client.get_or_create_collection(name="medical_docs")
 
     all_chunks = []
 
-    # Resolve project root and data directory
-    BASE_DIR = os.path.dirname(os.path.dirname(__file__))
-    DATA_DIR = os.path.join(BASE_DIR, "data")
-
-    # Process all PDF files in data folder
     for file in os.listdir(DATA_DIR):
         if file.endswith(".pdf"):
             path = os.path.join(DATA_DIR, file)
@@ -83,14 +73,11 @@ def main():
             chunks = chunk_documents(docs)
             all_chunks.extend(chunks)
 
-    # Extract content and metadata
     texts = [c["content"] for c in all_chunks]
     metadatas = [c["metadata"] for c in all_chunks]
 
-    # Convert text to embeddings
     embeddings = model.encode(texts)
 
-    # Store in vector database
     collection.add(
         documents=texts,
         embeddings=embeddings,
@@ -98,7 +85,7 @@ def main():
         ids=[str(i) for i in range(len(texts))]
     )
 
-    print(f"Indexed {len(texts)} chunks.")
+    print("Indexed:", len(texts))
 
 
 if __name__ == "__main__":
