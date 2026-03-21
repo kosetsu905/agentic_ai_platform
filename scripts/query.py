@@ -1,5 +1,5 @@
 import os
-from langchain_community.vectorstores import Chroma
+from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_ollama import OllamaLLM
 
@@ -28,8 +28,11 @@ llm = OllamaLLM(model="llama3:latest")
 prompt = ChatPromptTemplate.from_template("""
 You are a medical assistant.
 
-Answer ONLY based on the context below.
-If the answer is not in the context, say "I don't know".
+STRICT RULES:
+- Use ONLY the provided context
+- Do NOT use your own knowledge
+- If the answer is not explicitly in the context, say "I don't know"
+- DO NOT repeat source references in the answer
 
 Context:
 {context}
@@ -41,7 +44,16 @@ Answer:
 """)
 
 def format_docs(docs):
-    return "\n\n".join(doc.page_content for doc in docs)
+    formatted = []
+    for d in docs:
+        source = d.metadata.get("source", "unknown")
+        page = d.metadata.get("page", "unknown")
+
+        formatted.append(
+            f"[Source: {os.path.basename(source)} | Page: {page}]\n{d.page_content}"
+        )
+
+    return "\n\n---\n\n".join(formatted)
 
 
 chain = (
@@ -52,13 +64,33 @@ chain = (
 )
 
 
+def extract_sources(docs):
+    sources = set()
+    for d in docs:
+        src = os.path.basename(d.metadata.get("source", "unknown"))
+        page = d.metadata.get("page", "unknown")
+        sources.add(f"{src} (Page {page})")
+    return "\n".join(f"- {s}" for s in sources)
+
+
 if __name__ == "__main__":
     while True:
         q = input(">> ")
         if q.lower() == "exit":
             break
 
-        print("\nAnswer:\n", chain.invoke(q))
+        docs = retriever.invoke(q)
+
+        context = format_docs(docs)
+        answer = (prompt | llm | StrOutputParser()).invoke({
+            "context": context,
+            "question": q
+        })
+
+        sources = extract_sources(docs)
+
+        print("\nAnswer:\n", answer)
+        print("\nSources:\n", sources)
 
 # What is hypertension?
 # What are the strategies for hypertension control?
