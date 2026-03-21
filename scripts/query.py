@@ -95,3 +95,9 @@ if __name__ == "__main__":
 # What is hypertension?
 # What are the strategies for hypertension control?
 # What are the barriers to hypertension control?
+# What is high blood pressure?
+# What is a flu?
+# What is the lung problem?
+# Can you list some types of cancer?
+# What cause a oral health problem?
+# How head and neck cancer affect mouth health?
