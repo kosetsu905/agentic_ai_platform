@@ -1,62 +1,55 @@
 import os
-import chromadb
-from sentence_transformers import SentenceTransformer
-import subprocess
+from langchain_community.vectorstores import Chroma
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_ollama import OllamaLLM
 
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
 
-model = SentenceTransformer("all-MiniLM-L6-v2")
 
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
 DB_DIR = os.path.join(BASE_DIR, "chroma_db")
 
 print("DB PATH:", DB_DIR)
 
-client = chromadb.PersistentClient(path=DB_DIR)
+embeddings = HuggingFaceEmbeddings(
+    model_name="sentence-transformers/all-MiniLM-L6-v2"
+)
 
-try:
-    collection = client.get_collection(name="medical_docs")
-except Exception:
-    raise RuntimeError("Collection not found. Run ingest.py first.")
+db = Chroma(
+    persist_directory=DB_DIR,
+    embedding_function=embeddings
+)
 
+retriever = db.as_retriever(search_kwargs={"k": 5})
 
-def retrieve(query, k=5):
-    query_embedding = model.encode([query])
+llm = OllamaLLM(model="llama3:latest")
 
-    results = collection.query(
-        query_embeddings=query_embedding,
-        n_results=k
-    )
+prompt = ChatPromptTemplate.from_template("""
+You are a medical assistant.
 
-    return results["documents"][0], results["metadatas"][0]
-
-
-def ask_llm(prompt):
-    result = subprocess.run(
-        ["ollama", "run", "llama3"],
-        input=prompt,
-        capture_output=True,
-        encoding="utf-8"
-    )
-    return result.stdout
-
-
-def rag_query(query):
-    docs, _ = retrieve(query)
-    context = "\n\n".join(docs)
-
-    prompt = f"""
-You are a medical assistant. Answer ONLY using the context.
+Answer ONLY based on the context below.
+If the answer is not in the context, say "I don't know".
 
 Context:
 {context}
 
 Question:
-{query}
+{question}
 
 Answer:
-"""
+""")
 
-    return ask_llm(prompt)
+def format_docs(docs):
+    return "\n\n".join(doc.page_content for doc in docs)
+
+
+chain = (
+    {"context": retriever | format_docs, "question": lambda x: x}
+    | prompt
+    | llm
+    | StrOutputParser()
+)
 
 
 if __name__ == "__main__":
@@ -65,4 +58,8 @@ if __name__ == "__main__":
         if q.lower() == "exit":
             break
 
-        print(rag_query(q))
+        print("\nAnswer:\n", chain.invoke(q))
+
+# What is hypertension?
+# What are the strategies for hypertension control?
+# What are the barriers to hypertension control?
