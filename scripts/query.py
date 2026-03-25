@@ -109,6 +109,44 @@ def extract_sources(docs):
         sources.add(f"{src} (Page {page})")
     return "\n".join(f"- {s}" for s in sources)
 
+# 新增 Phoenix Evals
+from phoenix.evals.llm import LLM
+from phoenix.evals.metrics import CorrectnessEvaluator
+from phoenix.evals import bind_evaluator, evaluate_dataframe
+from phoenix.client import Client
+import pandas as pd
+
+# 1. 配置 Judge LLM
+judge_llm = LLM(
+    provider="openai",  # 你可以换成你自己的模型提供者
+    model="gpt-4o",
+    client="openai"
+)
+
+# 2. 创建内置 CorrectnessEvaluator
+correctness_eval = CorrectnessEvaluator(llm=judge_llm)
+
+# 3. 准备评估函数
+def evaluate_answer(query, answer):
+    # 这里用 DataFrame 模拟 Phoenix span 格式
+    df = pd.DataFrame([{
+        "attributes.input.value": query,
+        "attributes.output.value": answer
+    }])
+
+    # 绑定评估器
+    bound_eval = bind_evaluator(
+        evaluator=correctness_eval,
+        input_mapping={
+            "input": "attributes.input.value",
+            "output": "attributes.output.value",
+        }
+    )
+
+    # 运行评估
+    results_df = evaluate_dataframe(df, [bound_eval])
+    return results_df
+
 if __name__ == "__main__":
     while True:
         q = input(">> ")
@@ -133,6 +171,14 @@ if __name__ == "__main__":
 
         print("\nAnswer:\n", answer)
         print("\nSources:\n", sources)
+
+        # ======= Phoenix 自动评估 =======
+        eval_results = evaluate_answer(q, answer)
+        print("\nPhoenix Eval Results:\n", eval_results[["label", "score", "explanation"]])
+        # 可选：log 回 Phoenix
+        Client().spans.log_span_annotations_dataframe(
+            dataframe=eval_results
+        )
 
 # What is hypertension?
 # What are the strategies for hypertension control?
