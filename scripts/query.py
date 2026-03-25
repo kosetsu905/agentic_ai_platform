@@ -6,6 +6,10 @@ from langchain_ollama import OllamaLLM
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
+from sentence_transformers import CrossEncoder
+
+reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+
 
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
 DB_DIR = os.path.join(BASE_DIR, "chroma_db")
@@ -21,7 +25,7 @@ db = Chroma(
     embedding_function=embeddings
 )
 
-retriever = db.as_retriever(search_kwargs={"k": 5})
+retriever = db.as_retriever(search_kwargs={"k": 6})
 
 llm = OllamaLLM(model="llama3:latest")
 
@@ -29,10 +33,10 @@ prompt = ChatPromptTemplate.from_template("""
 You are a medical assistant.
 
 STRICT RULES:
-- Use ONLY the provided context
-- Do NOT use your own knowledge
-- If the answer is not explicitly in the context, say "I don't know"
-- DO NOT repeat source references in the answer
+- Answer ONLY using the provided context
+- If the answer is not clearly in the context, say "I don't know"
+- Be concise and factual
+- Do NOT make assumptions
 
 Context:
 {context}
@@ -42,6 +46,23 @@ Question:
 
 Answer:
 """)
+
+def rerank(query, docs, top_k=3):
+    pairs = [(query, d.page_content) for d in docs]
+    scores = reranker.predict(pairs, batch_size=8)
+
+    ranked = sorted(zip(docs, scores), key=lambda x: x[1], reverse=True)
+    return [doc for doc, _ in ranked[:top_k]]
+
+def format_docs_for_llm(docs, max_chars=2000):
+    text = ""
+    for d in docs:
+        chunk = d.page_content.strip()
+        if len(text) + len(chunk) > max_chars:
+            break
+        text += chunk + "\n\n"
+    return text
+
 
 def format_docs(docs):
     formatted = []
@@ -80,8 +101,9 @@ if __name__ == "__main__":
             break
 
         docs = retriever.invoke(q)
+        docs = rerank(q, docs, top_k=3)
 
-        context = format_docs(docs)
+        context = format_docs_for_llm(docs)
         answer = (prompt | llm | StrOutputParser()).invoke({
             "context": context,
             "question": q
