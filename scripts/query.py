@@ -1,4 +1,24 @@
 import os
+import phoenix as px
+
+from openinference.instrumentation.langchain import LangChainInstrumentor
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.trace import get_tracer
+
+tracer = get_tracer(__name__)
+
+session = px.launch_app()
+
+os.environ["PHOENIX_COLLECTOR_ENDPOINT"] = "http://localhost:6006/v1/traces"
+
+provider = TracerProvider()
+processor = SimpleSpanProcessor(OTLPSpanExporter(endpoint=os.environ["PHOENIX_COLLECTOR_ENDPOINT"]))
+provider.add_span_processor(processor)
+
+LangChainInstrumentor().instrument(tracer_provider=provider)
+
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_ollama import OllamaLLM
@@ -9,7 +29,6 @@ from langchain_core.output_parsers import StrOutputParser
 from sentence_transformers import CrossEncoder
 
 reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
-
 
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
 DB_DIR = os.path.join(BASE_DIR, "chroma_db")
@@ -63,7 +82,6 @@ def format_docs_for_llm(docs, max_chars=2000):
         text += chunk + "\n\n"
     return text
 
-
 def format_docs(docs):
     formatted = []
     for d in docs:
@@ -76,14 +94,12 @@ def format_docs(docs):
 
     return "\n\n---\n\n".join(formatted)
 
-
 chain = (
     {"context": retriever | format_docs, "question": lambda x: x}
     | prompt
     | llm
     | StrOutputParser()
 )
-
 
 def extract_sources(docs):
     sources = set()
@@ -93,21 +109,25 @@ def extract_sources(docs):
         sources.add(f"{src} (Page {page})")
     return "\n".join(f"- {s}" for s in sources)
 
-
 if __name__ == "__main__":
     while True:
         q = input(">> ")
         if q.lower() == "exit":
             break
 
-        docs = retriever.invoke(q)
-        docs = rerank(q, docs, top_k=3)
+        with tracer.start_as_current_span("rag_pipeline"):
+            with tracer.start_as_current_span("retrieval"):
+                docs = retriever.invoke(q)
 
-        context = format_docs_for_llm(docs)
-        answer = (prompt | llm | StrOutputParser()).invoke({
-            "context": context,
-            "question": q
-        })
+            with tracer.start_as_current_span("rerank"):
+                docs = rerank(q, docs, top_k=3)
+
+            with tracer.start_as_current_span("generation"):
+                context = format_docs_for_llm(docs)
+                answer = (prompt | llm | StrOutputParser()).invoke({
+                    "context": context,
+                    "question": q
+                })
 
         sources = extract_sources(docs)
 
