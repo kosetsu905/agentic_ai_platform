@@ -7,6 +7,9 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.trace import get_tracer
 
+from dotenv import load_dotenv
+load_dotenv()
+
 tracer = get_tracer(__name__)
 
 session = px.launch_app()
@@ -109,32 +112,28 @@ def extract_sources(docs):
         sources.add(f"{src} (Page {page})")
     return "\n".join(f"- {s}" for s in sources)
 
-# 新增 Phoenix Evals
 from phoenix.evals.llm import LLM
 from phoenix.evals.metrics import CorrectnessEvaluator
 from phoenix.evals import bind_evaluator, evaluate_dataframe
-from phoenix.client import Client
 import pandas as pd
 
-# 1. 配置 Judge LLM
+
 judge_llm = LLM(
-    provider="openai",  # 你可以换成你自己的模型提供者
-    model="gpt-4o",
+    provider="openai",
+    model="gpt-5.4-nano",
     client="openai"
 )
 
-# 2. 创建内置 CorrectnessEvaluator
+
 correctness_eval = CorrectnessEvaluator(llm=judge_llm)
 
-# 3. 准备评估函数
+
 def evaluate_answer(query, answer):
-    # 这里用 DataFrame 模拟 Phoenix span 格式
     df = pd.DataFrame([{
         "attributes.input.value": query,
         "attributes.output.value": answer
     }])
 
-    # 绑定评估器
     bound_eval = bind_evaluator(
         evaluator=correctness_eval,
         input_mapping={
@@ -143,8 +142,10 @@ def evaluate_answer(query, answer):
         }
     )
 
-    # 运行评估
-    results_df = evaluate_dataframe(df, [bound_eval])
+    results_df = evaluate_dataframe(
+        dataframe=df,
+        evaluators=[bound_eval]
+    )
     return results_df
 
 if __name__ == "__main__":
@@ -172,13 +173,13 @@ if __name__ == "__main__":
         print("\nAnswer:\n", answer)
         print("\nSources:\n", sources)
 
-        # ======= Phoenix 自动评估 =======
         eval_results = evaluate_answer(q, answer)
-        print("\nPhoenix Eval Results:\n", eval_results[["label", "score", "explanation"]])
-        # 可选：log 回 Phoenix
-        Client().spans.log_span_annotations_dataframe(
-            dataframe=eval_results
-        )
+        result = eval_results["correctness_score"].iloc[0]
+
+        print("\n=== Phoenix Eval Results ===")
+        print("Score:", result["score"])
+        print("Label:", result["label"])
+        print("Explanation:", result["explanation"])
 
 # What is hypertension?
 # What are the strategies for hypertension control?
