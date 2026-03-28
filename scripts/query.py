@@ -1,56 +1,86 @@
 import os
+from opensearchpy import OpenSearch
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_ollama import OllamaLLM
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+from sentence_transformers import CrossEncoder
 import phoenix as px
-
 from openinference.instrumentation.langchain import LangChainInstrumentor
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.trace import get_tracer
-
 from dotenv import load_dotenv
+import pandas as pd
+from phoenix.evals.llm import LLM
+from phoenix.evals.metrics import CorrectnessEvaluator
+from phoenix.evals import bind_evaluator, evaluate_dataframe
+
 load_dotenv()
 
 tracer = get_tracer(__name__)
-
 session = px.launch_app()
-
 os.environ["PHOENIX_COLLECTOR_ENDPOINT"] = "http://localhost:6006/v1/traces"
-
 provider = TracerProvider()
 processor = SimpleSpanProcessor(OTLPSpanExporter(endpoint=os.environ["PHOENIX_COLLECTOR_ENDPOINT"]))
 provider.add_span_processor(processor)
-
 LangChainInstrumentor().instrument(tracer_provider=provider)
 
-from langchain_chroma import Chroma
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_ollama import OllamaLLM
-
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
-
-from sentence_transformers import CrossEncoder
-
+embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
 reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 
-BASE_DIR = os.path.dirname(os.path.dirname(__file__))
-DB_DIR = os.path.join(BASE_DIR, "chroma_db")
+client = OpenSearch(hosts=[{"host": "localhost", "port": 9200}], use_ssl=False)
+INDEX_NAME = "medical_docs"
+TOP_K = 6
 
-print("DB PATH:", DB_DIR)
+def search(query, top_k=TOP_K):
+    q_vector = embeddings.embed_query(query)
+    body = {
+        "size": top_k,
+        "query": {
+            "knn": {
+                "embedding": {
+                    "vector": q_vector,
+                    "k": top_k
+                }
+            }
+        }
+    }
+    res = client.search(index=INDEX_NAME, body=body)
+    docs = []
+    for hit in res["hits"]["hits"]:
+        source = hit["_source"]
+        docs.append({
+            "content": source["content"],
+            "metadata": source["metadata"]
+        })
+    return docs
 
-embeddings = HuggingFaceEmbeddings(
-    model_name="sentence-transformers/all-MiniLM-L6-v2"
-)
+def rerank_docs(query, docs, top_k=3):
+    pairs = [(query, d["content"]) for d in docs]
+    scores = reranker.predict(pairs, batch_size=8)
+    ranked = sorted(zip(docs, scores), key=lambda x: x[1], reverse=True)
+    return [doc for doc, _ in ranked[:top_k]]
 
-db = Chroma(
-    persist_directory=DB_DIR,
-    embedding_function=embeddings
-)
+def format_docs_for_llm(docs, max_chars=2000):
+    text = ""
+    for d in docs:
+        chunk = d["content"].strip()
+        if len(text) + len(chunk) > max_chars:
+            break
+        text += chunk + "\n\n"
+    return text
 
-retriever = db.as_retriever(search_kwargs={"k": 6})
+def extract_sources(docs):
+    sources = set()
+    for d in docs:
+        src = os.path.basename(d["metadata"].get("source", "unknown"))
+        page = d["metadata"].get("page", "unknown")
+        sources.add(f"{src} (Page {page})")
+    return "\n".join(f"- {s}" for s in sources)
 
 llm = OllamaLLM(model="llama3:latest")
-
 prompt = ChatPromptTemplate.from_template("""
 You are a medical assistant.
 
@@ -69,64 +99,8 @@ Question:
 Answer:
 """)
 
-def rerank(query, docs, top_k=3):
-    pairs = [(query, d.page_content) for d in docs]
-    scores = reranker.predict(pairs, batch_size=8)
-
-    ranked = sorted(zip(docs, scores), key=lambda x: x[1], reverse=True)
-    return [doc for doc, _ in ranked[:top_k]]
-
-def format_docs_for_llm(docs, max_chars=2000):
-    text = ""
-    for d in docs:
-        chunk = d.page_content.strip()
-        if len(text) + len(chunk) > max_chars:
-            break
-        text += chunk + "\n\n"
-    return text
-
-def format_docs(docs):
-    formatted = []
-    for d in docs:
-        source = d.metadata.get("source", "unknown")
-        page = d.metadata.get("page", "unknown")
-
-        formatted.append(
-            f"[Source: {os.path.basename(source)} | Page: {page}]\n{d.page_content}"
-        )
-
-    return "\n\n---\n\n".join(formatted)
-
-chain = (
-    {"context": retriever | format_docs, "question": lambda x: x}
-    | prompt
-    | llm
-    | StrOutputParser()
-)
-
-def extract_sources(docs):
-    sources = set()
-    for d in docs:
-        src = os.path.basename(d.metadata.get("source", "unknown"))
-        page = d.metadata.get("page", "unknown")
-        sources.add(f"{src} (Page {page})")
-    return "\n".join(f"- {s}" for s in sources)
-
-from phoenix.evals.llm import LLM
-from phoenix.evals.metrics import CorrectnessEvaluator
-from phoenix.evals import bind_evaluator, evaluate_dataframe
-import pandas as pd
-
-
-judge_llm = LLM(
-    provider="openai",
-    model="gpt-5.4-nano",
-    client="openai"
-)
-
-
+judge_llm = LLM(provider="openai", model="gpt-5.4-nano", client="openai")
 correctness_eval = CorrectnessEvaluator(llm=judge_llm)
-
 
 def evaluate_answer(query, answer):
     df = pd.DataFrame([{
@@ -156,10 +130,10 @@ if __name__ == "__main__":
 
         with tracer.start_as_current_span("rag_pipeline"):
             with tracer.start_as_current_span("retrieval"):
-                docs = retriever.invoke(q)
+                docs = search(q)
 
             with tracer.start_as_current_span("rerank"):
-                docs = rerank(q, docs, top_k=3)
+                docs = rerank_docs(q, docs, top_k=3)
 
             with tracer.start_as_current_span("generation"):
                 context = format_docs_for_llm(docs)
