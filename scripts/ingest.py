@@ -2,8 +2,8 @@ import os
 import fitz
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
+from opensearchpy import OpenSearch, helpers
 
 
 def load_pdf(path):
@@ -29,9 +29,6 @@ def load_pdf(path):
 def main():
     BASE_DIR = os.path.dirname(os.path.dirname(__file__))
     DATA_DIR = os.path.join(BASE_DIR, "data")
-    DB_DIR = os.path.join(BASE_DIR, "chroma_db")
-
-    print("DB PATH:", DB_DIR)
 
     documents = []
 
@@ -51,14 +48,53 @@ def main():
         model_name="sentence-transformers/all-MiniLM-L6-v2"
     )
 
-    db = Chroma.from_documents(
-        docs,
-        embeddings,
-        persist_directory=DB_DIR
+    client = OpenSearch(
+        hosts=[{"host": "localhost", "port": 9200}],
+        use_ssl=False
     )
 
+    index_name = "medical_docs"
 
-    print("Indexed:", len(docs))
+    if client.indices.exists(index=index_name):
+        print(f"Deleting existing index '{index_name}'...")
+        client.indices.delete(index=index_name)
+
+    if not client.indices.exists(index=index_name):
+        mapping = {
+            "settings": {"index": {"knn": True, "number_of_shards": 3, "number_of_replicas": 1}},
+            "mappings": {
+                "properties": {
+                    "content": {"type": "text"},
+                    "metadata": {"type": "object"},
+                    "embedding": {
+                        "type": "knn_vector",
+                        "dimension": 384,
+                        "method": {
+                            "name": "hnsw",
+                            "space_type": "cosinesimil",
+                            "engine": "nmslib",
+                            "parameters": {"ef_construction": 512, "m": 16}
+                        }
+                    }
+                }
+            }
+        }
+        client.indices.create(index=index_name, body=mapping)
+
+    actions = []
+    for d in docs:
+        vector = embeddings.embed_query(d.page_content)
+        actions.append({
+            "_index": index_name,
+            "_source": {
+                "content": d.page_content,
+                "metadata": d.metadata,
+                "embedding": vector
+            }
+        })
+
+    helpers.bulk(client, actions)
+    print(f"Indexed {len(docs)} chunks into OpenSearch")
 
 
 if __name__ == "__main__":
