@@ -1,5 +1,6 @@
 import os
 import fitz
+import uuid
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -93,10 +94,13 @@ def main():
     client.indices.create(index=index_name, body=mapping)
 
     actions = []
-    for d in docs:
-        vector = embeddings.embed_query(d.page_content)
+    texts = [d.page_content for d in docs]
+    vectors = embeddings.embed_documents(texts)
+
+    for d, vector in zip(docs, vectors):
         actions.append({
             "_index": index_name,
+            "_id": str(uuid.uuid4()),
             "_source": {
                 "content": d.page_content,
                 "metadata": d.metadata,
