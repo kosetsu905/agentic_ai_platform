@@ -39,11 +39,27 @@ def search(query, top_k=TOP_K):
     body = {
         "size": top_k,
         "query": {
-            "knn": {
-                "embedding": {
-                    "vector": q_vector,
-                    "k": top_k
-                }
+            "bool": {
+                "must": [
+                    {
+                        "match": {
+                            "content": query  # keyword search
+                        }
+                    },
+                    {
+                        "knn": {
+                            "embedding": {
+                                "vector": q_vector,
+                                "k": top_k
+                            }
+                        }
+                    }
+                ],
+                "filter": [
+                    {
+                        "exists": {"field": "metadata.source"}
+                    }
+                ]
             }
         }
     }
