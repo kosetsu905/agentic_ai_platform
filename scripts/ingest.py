@@ -9,6 +9,7 @@ from opensearchpy import OpenSearch, helpers
 def load_pdf(path):
     docs = []
     pdf = fitz.open(path)
+    filename = os.path.basename(path)
 
     for page_num, page in enumerate(pdf):
         text = page.get_text()
@@ -17,12 +18,12 @@ def load_pdf(path):
                 Document(
                     page_content=text,
                     metadata={
-                        "source": path,
-                        "page": page_num
+                        "source": filename,
+                        "page": page_num,
+                        "doc_type": "medical"
                     }
                 )
             )
-
     return docs
 
 
@@ -56,30 +57,40 @@ def main():
     index_name = "medical_docs"
 
     if client.indices.exists(index=index_name):
-        print(f"Deleting existing index '{index_name}'...")
         client.indices.delete(index=index_name)
 
-    if not client.indices.exists(index=index_name):
-        mapping = {
-            "settings": {"index": {"knn": True, "number_of_shards": 3, "number_of_replicas": 1}},
-            "mappings": {
-                "properties": {
-                    "content": {"type": "text"},
-                    "metadata": {"type": "object"},
-                    "embedding": {
-                        "type": "knn_vector",
-                        "dimension": 384,
-                        "method": {
-                            "name": "hnsw",
-                            "space_type": "cosinesimil",
-                            "engine": "nmslib",
-                            "parameters": {"ef_construction": 512, "m": 16}
-                        }
+    mapping = {
+        "settings": {
+            "index": {
+                "knn": True,
+                "number_of_shards": 3,
+                "number_of_replicas": 1
+            }
+        },
+        "mappings": {
+            "properties": {
+                "content": {"type": "text"},
+                "metadata": {
+                    "properties": {
+                        "source": {"type": "keyword"},
+                        "page": {"type": "integer"},
+                        "doc_type": {"type": "keyword"}
+                    }
+                },
+                "embedding": {
+                    "type": "knn_vector",
+                    "dimension": 384,
+                    "method": {
+                        "name": "hnsw",
+                        "engine": "faiss",
+                        "space_type": "cosinesimil"
                     }
                 }
             }
         }
-        client.indices.create(index=index_name, body=mapping)
+    }
+
+    client.indices.create(index=index_name, body=mapping)
 
     actions = []
     for d in docs:

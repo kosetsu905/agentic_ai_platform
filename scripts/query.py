@@ -33,17 +33,51 @@ reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 client = OpenSearch(hosts=[{"host": "localhost", "port": 9200}], use_ssl=False)
 INDEX_NAME = "medical_docs"
 TOP_K = 6
+pipeline_body = {
+    "phase_results_processors": [
+        {
+            "normalization-processor": {
+                "normalization": {
+                    "technique": "min_max"
+                },
+                "combination": {
+                    "technique": "arithmetic_mean",
+                    "parameters": {
+                        "weights": [0.4, 0.6]
+                    }
+                }
+            }
+        }
+    ]
+}
+
+try:
+    client.transport.perform_request(
+        "PUT",
+        "/_search/pipeline/hybrid-search-pipeline",
+        body=pipeline_body
+    )
+
+    client.indices.put_settings(
+        index=INDEX_NAME,
+        body={
+            "index.search.default_pipeline": "hybrid-search-pipeline"
+        }
+    )
+except Exception:
+    pass
 
 def search(query, top_k=TOP_K):
     q_vector = embeddings.embed_query(query)
+
     body = {
         "size": top_k,
         "query": {
-            "bool": {
-                "must": [
+            "hybrid": {
+                "queries": [
                     {
                         "match": {
-                            "content": query  # keyword search
+                            "content": query
                         }
                     },
                     {
@@ -54,16 +88,18 @@ def search(query, top_k=TOP_K):
                             }
                         }
                     }
-                ],
-                "filter": [
-                    {
-                        "exists": {"field": "metadata.source"}
-                    }
                 ]
+            }
+        },
+        "post_filter": {
+            "term": {
+                "metadata.doc_type": "medical"
             }
         }
     }
+
     res = client.search(index=INDEX_NAME, body=body)
+
     docs = []
     for hit in res["hits"]["hits"]:
         source = hit["_source"]
@@ -71,6 +107,7 @@ def search(query, top_k=TOP_K):
             "content": source["content"],
             "metadata": source["metadata"]
         })
+
     return docs
 
 def rerank_docs(query, docs, top_k=3):
