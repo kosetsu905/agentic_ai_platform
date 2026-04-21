@@ -8,3 +8,9 @@ docker run -d --name opensearch -p 9200:9200 -p 9600:9600 -e "discovery.type=sin
 ```sh
 docker start opensearch
 ```
+
+# Run UI/UX
+```sh
+cd frontend
+npm run dev
+```

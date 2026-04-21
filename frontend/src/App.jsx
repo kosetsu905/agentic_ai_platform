@@ -1,121 +1,129 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import heroImg from './assets/hero.png'
-import './App.css'
+import React, { useState } from "react";
 
-function App() {
-  const [count, setCount] = useState(0)
+export default function App() {
+  const [messages, setMessages] = useState([
+    { role: "assistant", content: "Hello! Ask me a medical question." }
+  ]);
+  const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const sendMessage = () => {
+    if (!input.trim() || loading) return;
+
+    const text = input;
+    setMessages((prev) => [...prev, { role: "user", content: text }]);
+    setInput("");
+    setLoading(true);
+
+    setTimeout(() => {
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content: "This is a demo response for: " + text
+        }
+      ]);
+      setLoading(false);
+    }, 1000);
+  };
 
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.jsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
+    <div style={styles.page}>
+      <div style={styles.container}>
+        <h1 style={styles.title}>Medical RAG Assistant</h1>
 
-      <div className="ticks"></div>
+        <div style={styles.chatBox}>
+          {messages.map((msg, index) => (
+            <div
+              key={index}
+              style={{
+                ...styles.messageRow,
+                justifyContent:
+                  msg.role === "user" ? "flex-end" : "flex-start"
+              }}
+            >
+              <div
+                style={{
+                  ...styles.bubble,
+                  backgroundColor:
+                    msg.role === "user" ? "#2563eb" : "#1e293b"
+                }}
+              >
+                {msg.content}
+              </div>
+            </div>
+          ))}
 
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
+          {loading && <p style={{ color: "#94a3b8" }}>Thinking...</p>}
         </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
 
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
-  )
+        <div style={styles.inputRow}>
+          <input
+            style={styles.input}
+            value={input}
+            placeholder="Ask a question..."
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && sendMessage()}
+          />
+          <button style={styles.button} onClick={sendMessage}>
+            Send
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
-export default App
+const styles = {
+  page: {
+    background: "#0f172a",
+    height: "100vh",
+    color: "white",
+    display: "flex",
+    justifyContent: "center",
+    alignItems: "center",
+    fontFamily: "Arial"
+  },
+  container: {
+    width: "90%",
+    maxWidth: "900px"
+  },
+  title: {
+    marginBottom: "20px"
+  },
+  chatBox: {
+    background: "#111827",
+    height: "70vh",
+    overflowY: "auto",
+    padding: "20px",
+    borderRadius: "16px",
+    marginBottom: "15px"
+  },
+  messageRow: {
+    display: "flex",
+    marginBottom: "12px"
+  },
+  bubble: {
+    padding: "12px 16px",
+    borderRadius: "16px",
+    maxWidth: "70%"
+  },
+  inputRow: {
+    display: "flex",
+    gap: "10px"
+  },
+  input: {
+    flex: 1,
+    padding: "12px",
+    borderRadius: "10px",
+    border: "none"
+  },
+  button: {
+    background: "#2563eb",
+    color: "white",
+    border: "none",
+    padding: "12px 20px",
+    borderRadius: "10px",
+    cursor: "pointer"
+  }
+};
