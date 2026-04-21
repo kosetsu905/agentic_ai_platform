@@ -7,25 +7,47 @@ export default function App() {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const sendMessage = () => {
-    if (!input.trim() || loading) return;
+const sendMessage = async () => {
+  if (!input.trim() || loading) return;
 
-    const text = input;
-    setMessages((prev) => [...prev, { role: "user", content: text }]);
-    setInput("");
-    setLoading(true);
+  const text = input;
 
-    setTimeout(() => {
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          content: "This is a demo response for: " + text
-        }
-      ]);
-      setLoading(false);
-    }, 1000);
-  };
+  setMessages((prev) => [...prev, { role: "user", content: text }]);
+  setInput("");
+  setLoading(true);
+
+  try {
+    const res = await fetch("http://127.0.0.1:8000/chat", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        message: text
+      })
+    });
+
+    const data = await res.json();
+
+    setMessages((prev) => [
+      ...prev,
+      {
+        role: "assistant",
+        content: data.answer
+      }
+    ]);
+  } catch (err) {
+    setMessages((prev) => [
+      ...prev,
+      {
+        role: "assistant",
+        content: "Error connecting to backend."
+      }
+    ]);
+  }
+
+  setLoading(false);
+};
 
   return (
     <div style={styles.page}>

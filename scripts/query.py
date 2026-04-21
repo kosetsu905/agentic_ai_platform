@@ -175,6 +175,18 @@ def evaluate_answer(query, answer):
     )
     return results_df
 
+def ask_question(q):
+    docs = search(q)
+    docs = rerank_docs(q, docs, top_k=3)
+    context = format_docs_for_llm(docs)
+
+    answer = (prompt | llm | StrOutputParser()).invoke({
+        "context": context,
+        "question": q
+    })
+
+    return answer, docs
+
 if __name__ == "__main__":
     while True:
         q = input(">> ")
