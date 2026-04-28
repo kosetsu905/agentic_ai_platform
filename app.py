@@ -1,21 +1,26 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 from scripts.query import ask_question
 
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:3000"],
+    allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"]
+    allow_headers=["*"],
 )
 
-class ChatRequest(BaseModel):
-    message: str
+@app.post("/rag")
+async def rag(req: Request):
+    body = await req.json()
 
-@app.post("/chat")
-def chat(req: ChatRequest):
-    answer, docs = ask_question(req.message)
-    return {"answer": answer}
+    q = body.get("query", "")   # ✅ safe
+
+    answer, docs = ask_question(q)
+
+    return {
+        "answer": answer,
+        "docs": docs
+    }

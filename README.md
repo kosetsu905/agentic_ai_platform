@@ -16,6 +16,6 @@ uvicorn app:app --reload
 
 # Run frontend UI/UX
 ```sh
-cd frontend
+cd frontend-ui
 npm run dev
 ```
