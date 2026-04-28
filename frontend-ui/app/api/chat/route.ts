@@ -41,11 +41,13 @@ export async function POST(req: Request) {
   });
 
   const rag = await ragRes.json();
-
   return createUIMessageStreamResponse({
+    status: 200,
+    statusText: 'OK',
+    headers: {'Custom-Header': 'value',
+    },
     stream: createUIMessageStream({
       execute({ writer }) {
-        // 1️⃣ 直接写文本（核心答案）
         writer.write({
           type: "text-start",
           id: "answer",

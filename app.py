@@ -16,7 +16,7 @@ app.add_middleware(
 async def rag(req: Request):
     body = await req.json()
 
-    q = body.get("query", "")   # ✅ safe
+    q = body.get("query", "")
 
     answer, docs = ask_question(q)
 
