@@ -1,5 +1,7 @@
-import { streamText } from "ai";
-import { openai } from "@ai-sdk/openai";
+import {
+  createUIMessageStream,
+  createUIMessageStreamResponse,
+} from "ai";
 
 function normalizeMessages(messages: any[]) {
   return messages
@@ -40,16 +42,26 @@ export async function POST(req: Request) {
 
   const rag = await ragRes.json();
 
-  const result = streamText({
-    model: openai("gpt-4o-mini"),
-    messages: [
-      {
-        role: "system",
-        content: `Use this context:\n${rag.answer}`
-      },
-      ...cleanMessages
-    ]
-  });
+  return createUIMessageStreamResponse({
+    stream: createUIMessageStream({
+      execute({ writer }) {
+        // 1️⃣ 直接写文本（核心答案）
+        writer.write({
+          type: "text-start",
+          id: "answer",
+        });
 
-  return result.toUIMessageStreamResponse();
+        writer.write({
+          type: "text-delta",
+          id: "answer",
+          delta: rag.answer,
+        });
+
+        writer.write({
+          type: "text-end",
+          id: "answer",
+        });
+      },
+    }),
+  });
 }
