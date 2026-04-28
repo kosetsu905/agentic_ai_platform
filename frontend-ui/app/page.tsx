@@ -14,9 +14,11 @@ export default function MyApp() {
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <div>
-        <ThreadList />
-        <Thread />
+      <div className="h-screen flex">
+        <ThreadList className="w-64" />
+        <div className="flex-1">
+          <Thread />
+        </div>
       </div>
     </AssistantRuntimeProvider>
   );
