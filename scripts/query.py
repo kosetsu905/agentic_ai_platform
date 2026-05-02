@@ -5,6 +5,8 @@ from langchain_ollama import OllamaLLM
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_community.utilities import GoogleSerperAPIWrapper
+from langchain_core.retrievers import BaseRetriever
+from langchain_core.documents import Document
 from sentence_transformers import CrossEncoder
 '''import phoenix as px
 from openinference.instrumentation.langchain import LangChainInstrumentor
@@ -191,27 +193,41 @@ def web_search(query, k=3):
 
     return docs
 
+class HybridRetriever(BaseRetriever):
+    def _get_relevant_documents(self, query: str):
+        local_docs = search(query)
+        local_docs = rerank_docs(query, local_docs, top_k=3)
+
+        web_docs = web_search(query)
+
+        all_docs = local_docs + [
+            {"content": d, "metadata": {"source": "web"}}
+            for d in web_docs
+        ]
+
+        all_docs = rerank_docs(query, all_docs, top_k=4)
+
+        return [
+            Document(
+                page_content=d["content"],
+                metadata=d["metadata"]
+            )
+            for d in all_docs
+        ]
+
+retriever = HybridRetriever()
+
 def ask_question(q):
-    local_docs = search(q)
-    local_docs = rerank_docs(q, local_docs, top_k=3)
+    docs = retriever.invoke(q)
 
-    web_docs = web_search(q)
-
-    all_docs = local_docs + [
-        {"content": d, "metadata": {"source": "web"}}
-        for d in web_docs
-    ]
-
-    all_docs = rerank_docs(q, all_docs, top_k=4)
-
-    context = format_docs_for_llm(all_docs)
+    context = format_docs_for_llm(docs)
 
     answer = (prompt | llm | StrOutputParser()).invoke({
         "context": context,
         "question": q
     })
 
-    return answer, all_docs
+    return answer, docs
 
 '''if __name__ == "__main__":
     while True:
