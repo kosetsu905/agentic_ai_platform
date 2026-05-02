@@ -4,28 +4,29 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_ollama import OllamaLLM
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
+from langchain_community.utilities import GoogleSerperAPIWrapper
 from sentence_transformers import CrossEncoder
-import phoenix as px
+'''import phoenix as px
 from openinference.instrumentation.langchain import LangChainInstrumentor
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-from opentelemetry.trace import get_tracer
+from opentelemetry.trace import get_tracer'''
 from dotenv import load_dotenv
-import pandas as pd
+'''import pandas as pd
 from phoenix.evals.llm import LLM
 from phoenix.evals.metrics import CorrectnessEvaluator
-from phoenix.evals import bind_evaluator, evaluate_dataframe
+from phoenix.evals import bind_evaluator, evaluate_dataframe'''
 
 load_dotenv()
 
-tracer = get_tracer(__name__)
+'''tracer = get_tracer(__name__)
 session = px.launch_app()
 os.environ["PHOENIX_COLLECTOR_ENDPOINT"] = "http://localhost:6006/v1/traces"
 provider = TracerProvider()
 processor = SimpleSpanProcessor(OTLPSpanExporter(endpoint=os.environ["PHOENIX_COLLECTOR_ENDPOINT"]))
 provider.add_span_processor(processor)
-LangChainInstrumentor().instrument(tracer_provider=provider)
+LangChainInstrumentor().instrument(tracer_provider=provider)'''
 
 embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
 reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
@@ -152,7 +153,7 @@ Question:
 Answer:
 """)
 
-judge_llm = LLM(provider="openai", model="gpt-5.4-nano", client="openai")
+'''judge_llm = LLM(provider="openai", model="gpt-5.4-nano", client="openai")
 correctness_eval = CorrectnessEvaluator(llm=judge_llm)
 
 def evaluate_answer(query, answer):
@@ -173,21 +174,46 @@ def evaluate_answer(query, answer):
         dataframe=df,
         evaluators=[bound_eval]
     )
-    return results_df
+    return results_df'''
+
+serper = GoogleSerperAPIWrapper()
+
+def web_search(query, k=3):
+    results = serper.results(query)
+
+    docs = []
+
+    if "answerBox" in results:
+        docs.append(results["answerBox"].get("snippet", ""))
+
+    for r in results.get("organic", [])[:k]:
+        docs.append(r.get("snippet", ""))
+
+    return docs
 
 def ask_question(q):
-    docs = search(q)
-    docs = rerank_docs(q, docs, top_k=3)
-    context = format_docs_for_llm(docs)
+    local_docs = search(q)
+    local_docs = rerank_docs(q, local_docs, top_k=3)
+
+    web_docs = web_search(q)
+
+    all_docs = local_docs + [
+        {"content": d, "metadata": {"source": "web"}}
+        for d in web_docs
+    ]
+
+    all_docs = rerank_docs(q, all_docs, top_k=4)
+
+    context = format_docs_for_llm(all_docs)
 
     answer = (prompt | llm | StrOutputParser()).invoke({
         "context": context,
         "question": q
     })
 
-    return answer, docs
+    return answer, all_docs
 
-if __name__ == "__main__":
+'''if __name__ == "__main__":
     while True:
         q = input(">> ")
         if q.lower() == "exit":
@@ -218,7 +244,7 @@ if __name__ == "__main__":
         print("\n=== Phoenix Eval Results ===")
         print("Score:", result["score"])
         print("Label:", result["label"])
-        print("Explanation:", result["explanation"])
+        print("Explanation:", result["explanation"])'''
 
 # What is hypertension?
 # What are the strategies for hypertension control?
