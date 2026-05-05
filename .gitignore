@@ -1,6 +1,9 @@
 .idea/*
 chroma_db/*
 .env
+.venv/
 
 __pycache__/
 *.pyc
+.pytest_cache/
+.mypy_cache/
