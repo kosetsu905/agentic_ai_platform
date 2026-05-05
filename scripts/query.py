@@ -199,6 +199,7 @@ class HybridRetriever(BaseRetriever):
         local_docs = rerank_docs(query, local_docs, top_k=3)
 
         web_docs = web_search(query)
+        print(web_docs)
 
         all_docs = local_docs + [
             {"content": d, "metadata": {"source": "web"}}
@@ -220,7 +221,7 @@ retriever = HybridRetriever()
 def ask_question(q):
     docs = retriever.invoke(q)
 
-    context = format_docs_for_llm(docs)
+    context = "\n\n".join([d.page_content for d in docs])
 
     answer = (prompt | llm | StrOutputParser()).invoke({
         "context": context,
