@@ -20,6 +20,7 @@ import {
   SuggestionPrimitive,
   ThreadPrimitive,
   useAuiState,
+  useComposerRuntime,
 } from "@assistant-ui/react";
 import {
   ArrowDownIcon,
@@ -34,7 +35,7 @@ import {
   RefreshCwIcon,
   SquareIcon,
 } from "lucide-react";
-import type { FC } from "react";
+import type { ChangeEventHandler, ComponentProps, FC } from "react";
 
 export const Thread: FC = () => {
   return (
@@ -151,7 +152,7 @@ const Composer: FC = () => {
           className="flex w-full flex-col gap-2 rounded-(--composer-radius) border bg-background p-(--composer-padding) transition-shadow focus-within:border-ring/75 focus-within:ring-2 focus-within:ring-ring/20 data-[dragging=true]:border-ring data-[dragging=true]:border-dashed data-[dragging=true]:bg-accent/50"
         >
           <ComposerAttachments />
-          <ComposerPrimitive.Input
+          <IMEComposerInput
             placeholder="Send a message..."
             className="aui-composer-input max-h-32 min-h-10 w-full resize-none bg-transparent px-1.75 py-1 text-sm outline-none placeholder:text-muted-foreground/80"
             rows={1}
@@ -163,6 +164,21 @@ const Composer: FC = () => {
       </ComposerPrimitive.AttachmentDropzone>
     </ComposerPrimitive.Root>
   );
+};
+
+const IMEComposerInput: FC<ComponentProps<typeof ComposerPrimitive.Input>> = (
+  props,
+) => {
+  const composer = useComposerRuntime();
+
+  const handleChange: ChangeEventHandler<HTMLTextAreaElement> = (event) => {
+    props.onChange?.(event);
+    if (event.defaultPrevented || !composer.getState().isEditing) return;
+
+    composer.setText(event.currentTarget.value);
+  };
+
+  return <ComposerPrimitive.Input {...props} onChange={handleChange} />;
 };
 
 const ComposerAction: FC = () => {
@@ -347,7 +363,7 @@ const EditComposer: FC = () => {
       className="flex flex-col px-2"
     >
       <ComposerPrimitive.Root className="aui-edit-composer-root ms-auto flex w-full max-w-[85%] flex-col rounded-2xl bg-muted">
-        <ComposerPrimitive.Input
+        <IMEComposerInput
           className="aui-edit-composer-input min-h-14 w-full resize-none bg-transparent p-4 text-foreground text-sm outline-none"
           autoFocus
         />
