@@ -1,0 +1,196 @@
+# OpenSearch 混合检索模块优化需求文档
+
+## 1. 背景与目标
+当前 `query.py` 中的 OpenSearch 混合检索实现存在语法错误、算法配置低效及工程规范缺失问题。本需求旨在修复代码缺陷，优化检索算法（引入 RRF），提升医疗场景下的召回率与准确率，并增强代码的可维护性。
+
+## 2. 核心修改任务
+
+### 2.1 代码语法与格式清洗（高优先级）
+**问题描述**：当前代码中大量字典键名（Key）和字符串值包含尾随空格（如 `"host "`, `"phase_results_processors "`），导致 OpenSearch API 调用失败或行为不可预测。
+**执行要求**：
+1. **全局清理空格**：检查并移除所有字典 Key 和 String Value 末尾的空格。
+   - 示例修正：`"host "` -> `"host"`，`"medical_docs "` -> `"medical_docs"`。
+   - 涉及范围：`client` 初始化配置、`pipeline_body`、`search` 函数中的 `body` 构造、`extract_sources` 中的元数据读取。
+2. **统一变量命名**：确保索引名 `INDEX_NAME`、管道名等常量定义无多余空格。
+
+### 2.2 检索算法升级：从加权平均到 RRF
+**问题描述**：当前使用 `min_max` 归一化 + `arithmetic_mean` 加权融合，依赖人工调参且对分数分布敏感。
+**执行要求**：
+1. **更新 Pipeline 配置**：将 `phase_results_processors` 中的组合技术由 `arithmetic_mean` 替换为 `rrf` (Reciprocal Rank Fusion)。
+   - 配置参数建议：`rank_constant: 60`。
+   - 移除 `weights` 参数，RRF 无需权重。
+2. **调整查询体结构**：在 `search` 函数的 `body` 中，确保 `hybrid` 查询结构符合 OpenSearch 2.10+ RRF 标准。
+
+### 2.3 候选集与过滤策略优化
+**问题描述**：子查询 `top_k` 过小（仅6个），且使用 `post_filter` 导致性能浪费和潜在漏召。
+**执行要求**：
+1. **扩大子查询候选集**：
+   - BM25 (`match`) 查询：保持 `size` 为最终结果数或略大，但在内部逻辑中需确保足够候选。*注：OpenSearch Hybrid 查询中，子查询通常不直接设 size，而是由外层 hybrid 控制，但 KNN 需设置 `num_candidates`。*
+   - KNN 查询：增加 `num_candidates` 至 `80-100`（原 `k` 值的 10-15 倍），以提升向量召回覆盖率。
+   - 最终 `size`：保持 `TOP_K = 6` 或根据重排序需求调整为 `10-15`（因为后续有 CrossEncoder 重排，多召回一些给重排器筛选更佳）。
+2. **过滤器前置（Pre-filtering）**：
+   - 移除顶层的 `post_filter`。
+   - 将 `metadata.doc_type: medical` 过滤器移入 KNN 子查询的 `filter` 字段中。
+   - *注意*：BM25 部分若需过滤，需在 `bool` 查询中包裹 `must`/`filter`。建议将混合查询包裹在 `bool` 中，或分别处理。
+   - **推荐结构**：
+     ```json
+     "query": {
+       "hybrid": {
+         "queries": [
+           { "match": { ... } },
+           { "knn": { "embedding": { ..., "filter": { "term": { "metadata.doc_type": "medical" } } } } }
+         ]
+       }
+     }
+     ```
+     *(注：若 BM25 也需严格过滤，建议将 match 也放入 bool filter 上下文，或使用 post_filter 但接受性能损耗。鉴于医疗数据纯度，建议索引层面或 KNN 层面强过滤。)*
+
+### 2.4 工程健壮性改进
+**问题描述**：Pipeline 创建使用 `try...except pass`，掩盖错误；每次启动重复创建 Pipeline。
+**执行要求**：
+1. **幂等性初始化**：
+   - 在创建 Pipeline 前，先调用 `GET /_search/pipeline/hybrid-search-pipeline` 检查是否存在。
+   - 仅当不存在或配置版本不一致时才执行 `PUT`。
+2. **异常处理规范化**：
+   - 移除空的 `except Exception: pass`。
+   - 改为记录日志（`logging.warning` 或 `print`），明确提示 Pipeline 创建失败原因，但不中断程序运行（降级为普通搜索或抛出明确错误）。
+
+### 2.5 医疗场景适配（可选/进阶）
+**执行要求**：
+1. **字段权重优化**：
+   - 将 BM25 的 `match` 查询升级为 `multi_match`。
+   - 对 `title`、`heading` 等字段设置更高 `boost`（如 `title^2.0`），对 `content` 设置默认权重。
+2. **同义词支持**：
+   - *备注*：此步骤需依赖 OpenSearch 索引映射中的 `synonym_graph` 过滤器。若索引未配置，代码层暂不做改动，但在需求中标记为“需确认索引映射已包含医疗同义词库”。
+
+## 3. 交付物标准
+
+### 3.1 代码修改点清单
+1. **`client` 初始化**：修正 host/port 键名空格。
+2. **`pipeline_body`**：
+   - 修正键名空格。
+   - 替换 `combination` 为 `rrf` 配置。
+3. **`search` 函数**：
+   - 修正 `body` 中所有键名空格。
+   - 修改 KNN 部分，增加 `num_candidates`。
+   - 将 `post_filter` 逻辑迁移至 KNN 的 `filter` 中（或根据实际数据结构调整）。
+   - 将 `match` 优化为 `multi_match`（可选，若结构简单可保留 match 但需修正空格）。
+4. **初始化逻辑**：
+   - 增加 Pipeline 存在性检查。
+   - 优化异常捕获逻辑。
+
+### 3.2 验证标准
+1. **无语法错误**：代码运行不报 JSON 解析错误或 Key Error。
+2. **检索成功**：输入测试问题（如 "What is hypertension?"），能成功从 OpenSearch 返回非空结果。
+3. **过滤生效**：返回结果的 `metadata.doc_type` 均为 "medical"。
+4. **RRF 生效**：查看 OpenSearch 慢查询日志或响应头，确认使用了 RRF 融合策略（或通过对比评分分布验证）。
+
+## 4. 参考代码片段（供 AI 生成时参考）
+
+### 4.1 修正后的 Pipeline Body
+```python
+pipeline_body = {
+    "description": "Hybrid search pipeline with RRF",
+    "phase_results_processors": [
+        {
+            "normalization-processor": {
+                "normalization": {
+                    "technique": "min_max"
+                },
+                "combination": {
+                    "technique": "rrf",
+                    "parameters": {
+                        "rank_constant": 60
+                    }
+                }
+            }
+        }
+    ]
+}
+```
+
+### 4.2 修正后的 Search Body
+```python
+def search(query, top_k=TOP_K):
+    q_vector = embeddings.embed_query(query)
+    
+    # 扩大候选集，KNN 使用 num_candidates
+    knn_k = top_k * 10 
+    num_candidates = knn_k * 2 
+
+    body = {
+        "size": top_k,
+        "query": {
+            "hybrid": {
+                "queries": [
+                    {
+                        "match": {
+                            "content": query
+                        }
+                    },
+                    {
+                        "knn": {
+                            "embedding": {
+                                "vector": q_vector,
+                                "k": knn_k,
+                                "num_candidates": num_candidates,
+                                "filter": {
+                                    "term": {
+                                        "metadata.doc_type": "medical"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                ]
+            }
+        }
+    }
+    # 注意：若 BM25 也需要严格过滤，需将 match 包裹在 bool 查询中，或使用 post_filter（性能稍差但实现简单）
+    # 此处假设主要依靠 KNN 过滤或索引层面已做隔离，若需双重过滤，建议：
+    # body["query"]["hybrid"]["queries"][0] 改为 bool 查询包含 filter
+    
+    res = client.search(index=INDEX_NAME, body=body)
+    # ... 后续处理保持不变，但需修正 key 访问时的空格问题 ...
+```
+
+### 4.3 健壮的初始化逻辑
+```python
+import logging
+logger = logging.getLogger(__name__)
+
+def init_pipeline():
+    pipeline_name = "hybrid-search-pipeline"
+    try:
+        # 检查是否存在
+        client.transport.perform_request("GET", f"/_search/pipeline/{pipeline_name}")
+        logger.info(f"Pipeline {pipeline_name} already exists.")
+    except Exception:
+        # 不存在则创建
+        try:
+            client.transport.perform_request(
+                "PUT",
+                f"/_search/pipeline/{pipeline_name}",
+                body=pipeline_body
+            )
+            logger.info(f"Pipeline {pipeline_name} created successfully.")
+            
+            # 设置默认管道
+            client.indices.put_settings(
+                index=INDEX_NAME,
+                body={
+                    "index.search.default_pipeline": pipeline_name
+                }
+            )
+        except Exception as e:
+            logger.error(f"Failed to create pipeline: {e}")
+            # 根据业务需求决定是抛出异常还是继续
+```
+
+## 5. 执行步骤
+1. 读取 `query.py` 文件内容。
+2. 执行 **2.1** 全局空格清洗。
+3. 执行 **2.2** 替换 Pipeline 配置为 RRF。
+4. 执行 **2.3** 重构 `search` 函数中的查询体，应用 Pre-filtering 和扩大候选集。
+5. 执行 **2.4** 重构初始化逻辑，增加存在性检查和日志。
+6. 输出修改后的完整 `query.py` 代码。

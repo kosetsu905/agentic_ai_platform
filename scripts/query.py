@@ -1,4 +1,5 @@
-import os
+﻿import os
+import logging
 from opensearchpy import OpenSearch
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_ollama import OllamaLLM
@@ -22,6 +23,8 @@ from phoenix.evals import bind_evaluator, evaluate_dataframe'''
 
 load_dotenv()
 
+logger = logging.getLogger(__name__)
+
 '''tracer = get_tracer(__name__)
 session = px.launch_app()
 os.environ["PHOENIX_COLLECTOR_ENDPOINT"] = "http://localhost:6006/v1/traces"
@@ -35,8 +38,10 @@ reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 
 client = OpenSearch(hosts=[{"host": "localhost", "port": 9200}], use_ssl=False)
 INDEX_NAME = "medical_docs"
-TOP_K = 6
+TOP_K = 10
+PIPELINE_NAME = "hybrid-search-pipeline"
 pipeline_body = {
+    "description": "Hybrid search pipeline with RRF",
     "phase_results_processors": [
         {
             "normalization-processor": {
@@ -44,9 +49,9 @@ pipeline_body = {
                     "technique": "min_max"
                 },
                 "combination": {
-                    "technique": "arithmetic_mean",
+                    "technique": "rrf",
                     "parameters": {
-                        "weights": [0.4, 0.6]
+                        "rank_constant": 60
                     }
                 }
             }
@@ -54,24 +59,35 @@ pipeline_body = {
     ]
 }
 
-try:
-    client.transport.perform_request(
-        "PUT",
-        "/_search/pipeline/hybrid-search-pipeline",
-        body=pipeline_body
-    )
+def init_pipeline():
+    try:
+        client.transport.perform_request(
+            "GET",
+            f"/_search/pipeline/{PIPELINE_NAME}"
+        )
+        logger.info("Pipeline %s already exists.", PIPELINE_NAME)
+    except Exception:
+        try:
+            client.transport.perform_request(
+                "PUT",
+                f"/_search/pipeline/{PIPELINE_NAME}",
+                body=pipeline_body
+            )
+            logger.info("Pipeline %s created successfully.", PIPELINE_NAME)
+            client.indices.put_settings(
+                index=INDEX_NAME,
+                body={
+                    "index.search.default_pipeline": PIPELINE_NAME
+                }
+            )
+        except Exception as e:
+            logger.error("Failed to create pipeline: %s", e)
 
-    client.indices.put_settings(
-        index=INDEX_NAME,
-        body={
-            "index.search.default_pipeline": "hybrid-search-pipeline"
-        }
-    )
-except Exception:
-    pass
+init_pipeline()
 
 def search(query, top_k=TOP_K):
     q_vector = embeddings.embed_query(query)
+    knn_k = top_k * 10
 
     body = {
         "size": top_k,
@@ -87,16 +103,16 @@ def search(query, top_k=TOP_K):
                         "knn": {
                             "embedding": {
                                 "vector": q_vector,
-                                "k": top_k
+                                "k": knn_k,
+                                "filter": {
+                                    "term": {
+                                        "metadata.doc_type": "medical"
+                                    }
+                                }
                             }
                         }
                     }
                 ]
-            }
-        },
-        "post_filter": {
-            "term": {
-                "metadata.doc_type": "medical"
             }
         }
     }
