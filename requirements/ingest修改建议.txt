@@ -1,0 +1,89 @@
+【AI代码重构需求文档】
+项目名称：医疗PDF向量化入库脚本 (ingest.py)
+原始文件：用户提供的 ingest.py
+目标：基于原始代码进行全方位重构，修复致命语法错误，提升健壮性、性能、工程规范与生产安全性，输出可直接投入生产的 Python 3.9+ 脚本。
+
+========================================
+一、 必须修复的语法与逻辑错误（硬性要求）
+1. 内置变量修正：
+   - `os.path.dirname(os.path.dirname(file))` 改为 `os.path.dirname(os.path.dirname(__file__))`
+   - `if name == "main":` 改为 `if __name__ == "__main__":`
+2. 变量拼写修正：
+   - `do cs = splitter.split_documents(documents)` 改为 `docs = splitter.split_documents(documents)`
+3. 字符串尾部空格清理：
+   - 移除所有配置字符串末尾的空格，包括但不限于：`.pdf `、`all-MiniLM-L6-v2 `、`localhost `、`medical_docs `
+   - 移除字典键名中的空格，如 `"host "` 改为 `"host"`，`"space_type "` 改为 `"space_type"`
+4. OpenSearch 映射参数修正：
+   - `"space_type": "cosinesimil"` 必须改为 `"space_type": "cosine"`（OpenSearch 官方合法值）
+5. 函数调用空格：
+   - `embeddings .embed_documents(texts)` 改为 `embeddings.embed_documents(texts)`
+
+========================================
+二、 架构与工程化规范
+1. 函数拆分：将单一 `main()` 拆分为以下独立函数，遵循单一职责原则：
+   - `load_pdfs_from_dir(data_dir: Path) -> list[Document]`
+   - `split_documents(documents: list[Document]) -> list[Document]`
+   - `create_index_if_needed(client: OpenSearch, index_name: str) -> None`
+   - `batch_embed_and_index(docs: list[Document], embeddings, client, index_name) -> None`
+2. 路径处理：全面使用 `pathlib.Path` 替代 `os.path` 拼接路径。
+3. 类型提示：为所有函数参数与返回值添加标准类型注解（使用 `typing` 或内置泛型）。
+4. 依赖保持：继续使用 `pymupdf`、`langchain-core`、`langchain-text-splitters`、`langchain-huggingface`、`opensearch-py`。不强制切换至 LangChain VectorStore 封装，保留手动 Mapping 逻辑以便调试与定制。
+
+========================================
+三、 性能与内存优化
+1. 分批处理机制：
+   - 禁止一次性将全部文本送入 `embed_documents`。默认批次大小 `batch_size=64`。
+   - 使用生成器或切片迭代处理，防止大数据集导致 OOM。
+2. 流式写入：
+   - `helpers.bulk` 的 `actions` 参数必须使用生成器表达式 `( {..} for .. in .. )`，禁止使用 `list.append` 构建全量列表。
+3. 进度反馈：引入 `tqdm` 显示向量化与写入进度。
+
+========================================
+四、 健壮性与日志监控
+1. 日志系统：
+   - 移除所有 `print()`，替换为 Python 标准 `logging` 模块。
+   - 配置基础格式：`%(asctime)s | %(levelname)-8s | %(message)s`，默认级别 `INFO`。
+2. 异常捕获：
+   - PDF 加载：捕获 `fitz` 异常（如加密/损坏文件），记录 `WARNING` 后跳过，不中断主流程。
+   - 模型加载：捕获下载失败或初始化异常，记录 `ERROR` 并安全退出。
+   - OpenSearch 连接/写入：捕获网络超时、索引冲突、维度不匹配等异常，提供重试或明确报错。
+3. 维度校验：在写入前校验 `len(vector) == 384`，不匹配时记录错误并跳过该批次。
+
+========================================
+五、 配置管理与生产安全
+1. 环境变量配置：所有硬编码参数改为从环境变量读取，并提供合理默认值：
+   - `DATA_DIR`, `EMBEDDING_MODEL`, `OPENSEARCH_HOST`, `OPENSEARCH_PORT`, `OPENSEARCH_INDEX`
+   - `OPENSEARCH_USER`, `OPENSEARCH_PASSWORD`, `OPENSEARCH_USE_SSL`
+   - `CHUNK_SIZE`, `CHUNK_OVERLAP`, `BATCH_SIZE`
+2. 安全连接：
+   - `OpenSearch` 客户端必须支持 `http_auth`、`use_ssl`、`verify_certs` 配置。
+   - 生产环境默认开启 SSL 与证书校验。
+3. 索引管理：
+   - 索引创建前检查是否存在。若存在，仅在 `FORCE_REINDEX=true` 环境变量下执行删除重建，否则追加或跳过。
+
+========================================
+六、 AI 执行约束与输出格式
+1. 严格遵循上述一至五章要求逐条实现，不得遗漏。
+2. 代码必须为单文件完整可运行脚本，包含必要的 `import`。
+3. 在文件头部提供依赖安装命令与 `.env` 配置示例（注释形式）。
+4. 关键逻辑处添加简明中文注释，说明重构意图。
+5. 不引入未明确要求的第三方重型依赖。
+6. 输出格式：仅输出完整 Python 代码块，前后不附加冗余解释性文字。如需说明，请以代码内注释形式呈现。
+
+========================================
+附：预期 .env 配置示例（供参考）
+DATA_DIR=./data
+EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
+OPENSEARCH_HOST=localhost
+OPENSEARCH_PORT=9200
+OPENSEARCH_INDEX=medical_docs
+OPENSEARCH_USER=admin
+OPENSEARCH_PASSWORD=your_password
+OPENSEARCH_USE_SSL=false
+FORCE_REINDEX=false
+CHUNK_SIZE=500
+CHUNK_OVERLAP=100
+BATCH_SIZE=64
+
+========================================
+请 AI 根据本需求文档直接生成重构后的完整代码。
