@@ -1,4 +1,4 @@
-# Agentic AI Platform
+﻿# Agentic AI Platform
 
 This project is a local RAG application with:
 
@@ -7,6 +7,7 @@ This project is a local RAG application with:
 - OpenSearch for keyword and vector search
 - Ollama for local LLM generation
 - A Next.js frontend in `frontend-ui/`
+- Multi-turn conversation context with query rewriting
 
 ## Prerequisites
 
@@ -24,9 +25,44 @@ Create a `.env` file in the project root:
 ```env
 OPENAI_API_KEY=your_openai_api_key
 SERPER_API_KEY=your_serper_api_key
+
+# Multi-turn context (see "Multi-turn Conversation Context" section below)
+CONTEXT_MAX_TURNS=5
+CONTEXT_MAX_CHARS=2000
+ENABLE_QUERY_REWRITE=true
 ```
 
 `SERPER_API_KEY` is used by the web search wrapper in the backend. Do not commit real API keys.
+
+## Multi-turn Conversation Context
+
+The system supports multi-turn conversations by passing chat history to the LLM
+and using context-aware query rewriting to resolve pronoun references (e.g., "its", "they").
+
+**How it works:**
+- Each request carries the full conversation history from the frontend.
+- The history is truncated (by turn count and character length) to stay within the LLM context window.
+- When history is present, the current question is rewritten to be self-contained before retrieval.
+- The truncated history is injected into the Prompt alongside retrieved documents.
+- When no history is provided, the system falls back to single-turn mode (backward compatible).
+
+**Configuration:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CONTEXT_MAX_TURNS` | `5` | Maximum conversation turns to retain. One turn = one user message + one assistant reply. |
+| `CONTEXT_MAX_CHARS` | `2000` | Maximum characters of formatted chat history text injected into the Prompt. |
+| `ENABLE_QUERY_REWRITE` | `true` | Whether to use LLM-based query rewriting for coreference resolution. Set to `false` to skip the extra LLM call (faster but may miss pronoun references). |
+
+**Adjusting context size:**
+- Edit the values in `.env` to increase or decrease context limits.
+- Lower values reduce LLM latency and token usage; higher values provide richer context.
+- The truncation applies two-stage filtering: rounds first, then character count (discarding the oldest messages first).
+- Example: to retain only the last 3 turns and limit to 1000 chars:
+  ```env
+  CONTEXT_MAX_TURNS=3
+  CONTEXT_MAX_CHARS=1000
+  ```
 
 ## Backend Setup
 
