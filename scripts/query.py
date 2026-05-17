@@ -9,29 +9,16 @@ from langchain_community.utilities import GoogleSerperAPIWrapper
 from langchain_core.retrievers import BaseRetriever
 from langchain_core.documents import Document
 from sentence_transformers import CrossEncoder
-'''import phoenix as px
-from openinference.instrumentation.langchain import LangChainInstrumentor
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-from opentelemetry.trace import get_tracer'''
 from dotenv import load_dotenv
-'''import pandas as pd
-from phoenix.evals.llm import LLM
-from phoenix.evals.metrics import CorrectnessEvaluator
-from phoenix.evals import bind_evaluator, evaluate_dataframe'''
 
 load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-'''tracer = get_tracer(__name__)
-session = px.launch_app()
-os.environ["PHOENIX_COLLECTOR_ENDPOINT"] = "http://localhost:6006/v1/traces"
-provider = TracerProvider()
-processor = SimpleSpanProcessor(OTLPSpanExporter(endpoint=os.environ["PHOENIX_COLLECTOR_ENDPOINT"]))
-provider.add_span_processor(processor)
-LangChainInstrumentor().instrument(tracer_provider=provider)'''
+# === Context control parameters ===
+CONTEXT_MAX_TURNS = int(os.getenv("CONTEXT_MAX_TURNS", "5"))
+CONTEXT_MAX_CHARS = int(os.getenv("CONTEXT_MAX_CHARS", "2000"))
+ENABLE_QUERY_REWRITE = os.getenv("ENABLE_QUERY_REWRITE", "true").lower() == "true"
 
 embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
 reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
@@ -152,6 +139,78 @@ def extract_sources(docs):
         sources.add(f"{src} (Page {page})")
     return "\n".join(f"- {s}" for s in sources)
 
+# === Chat history handling ===
+
+def format_history(history: list[dict]) -> str:
+    """Format chat history into LLM-readable text."""
+    if not history:
+        return "None"
+    lines = []
+    for m in history:
+        role = m.get("role", "unknown")
+        content = m.get("content", "")
+        lines.append(f"{role.capitalize()}: {content}")
+    return "\n".join(lines)
+
+
+def truncate_history(
+    history: list[dict] | None,
+    max_turns: int = CONTEXT_MAX_TURNS,
+    max_chars: int = CONTEXT_MAX_CHARS,
+) -> list[dict]:
+    """
+    Apply dual truncation to chat history:
+    1. Turn truncation: keep the most recent max_turns rounds (each round = user + assistant).
+    2. Char truncation: limit the formatted history text to max_chars,
+       preserving recent messages from the tail to stay within the LLM context window.
+    """
+    if not history:
+        return []
+
+    # Step 1: turn truncation
+    max_messages = max_turns * 2
+    history = history[-max_messages:]
+
+    # Step 2: char truncation (keep from tail, discard earliest messages)
+    while True:
+        text = format_history(history)
+        if len(text) <= max_chars or len(history) <= 2:
+            break
+        # Discard the earliest round (user + assistant)
+        history = history[2:]
+
+    return history
+
+
+def rewrite_query_with_context(q: str, history: list[dict]) -> str:
+    """Use LLM to rewrite a context-dependent question into a self-contained query."""
+    if not history or not ENABLE_QUERY_REWRITE:
+        return q
+
+    rewrite_prompt = ChatPromptTemplate.from_template("""
+Given the conversation history and the user's latest question, rewrite the question
+so that it is self-contained and does not rely on pronouns or references from the history.
+If the question is already self-contained, return it as-is.
+
+History:
+{history}
+
+Question: {question}
+
+Rewritten Question:
+""")
+
+    try:
+        history_text = format_history(history)
+        chain = rewrite_prompt | llm | StrOutputParser()
+        rewritten = chain.invoke({"history": history_text, "question": q})
+        logger.info("Query rewritten: %s -> %s", q, rewritten.strip())
+        return rewritten.strip()
+    except Exception as exc:
+        logger.warning("Query rewrite failed: %s, falling back to original query", exc)
+        return q
+
+
 llm = OllamaLLM(model="llama3:latest")
 prompt = ChatPromptTemplate.from_template("""
 You are a medical assistant.
@@ -161,6 +220,10 @@ STRICT RULES:
 - If the answer is not clearly in the context, say "I don't know"
 - Be concise and factual
 - Do NOT make assumptions
+- If there is chat history, use it to understand the context of the question
+
+Chat History:
+{chat_history}
 
 Context:
 {context}
@@ -170,29 +233,6 @@ Question:
 
 Answer:
 """)
-
-'''judge_llm = LLM(provider="openai", model="gpt-5.4-nano", client="openai")
-correctness_eval = CorrectnessEvaluator(llm=judge_llm)
-
-def evaluate_answer(query, answer):
-    df = pd.DataFrame([{
-        "attributes.input.value": query,
-        "attributes.output.value": answer
-    }])
-
-    bound_eval = bind_evaluator(
-        evaluator=correctness_eval,
-        input_mapping={
-            "input": "attributes.input.value",
-            "output": "attributes.output.value",
-        }
-    )
-
-    results_df = evaluate_dataframe(
-        dataframe=df,
-        evaluators=[bound_eval]
-    )
-    return results_df'''
 
 serper = GoogleSerperAPIWrapper()
 
@@ -234,50 +274,34 @@ class HybridRetriever(BaseRetriever):
 
 retriever = HybridRetriever()
 
-def ask_question(q):
-    docs = retriever.invoke(q)
+
+def ask_question(q: str, history: list[dict] | None = None):
+    """
+    Main Q&A function with multi-turn conversation context support.
+
+    Args:
+        q: Current user question.
+        history: List of past messages in [{"role": "user/assistant", "content": "..."}, ...] format.
+                 Falls back to single-turn mode when None or empty.
+    """
+    history = truncate_history(history)
+
+    # Context-aware query rewrite (triggered only when history is non-empty)
+    search_query = rewrite_query_with_context(q, history) if history else q
+
+    # Retrieve (using rewritten query for better recall)
+    docs = retriever.invoke(search_query)
 
     context = "\n\n".join([d.page_content for d in docs])
+    chat_history_text = format_history(history)
 
     answer = (prompt | llm | StrOutputParser()).invoke({
         "context": context,
-        "question": q
+        "question": q,
+        "chat_history": chat_history_text,
     })
 
     return answer, docs
-
-'''if __name__ == "__main__":
-    while True:
-        q = input(">> ")
-        if q.lower() == "exit":
-            break
-
-        with tracer.start_as_current_span("rag_pipeline"):
-            with tracer.start_as_current_span("retrieval"):
-                docs = search(q)
-
-            with tracer.start_as_current_span("rerank"):
-                docs = rerank_docs(q, docs, top_k=3)
-
-            with tracer.start_as_current_span("generation"):
-                context = format_docs_for_llm(docs)
-                answer = (prompt | llm | StrOutputParser()).invoke({
-                    "context": context,
-                    "question": q
-                })
-
-        sources = extract_sources(docs)
-
-        print("\nAnswer:\n", answer)
-        print("\nSources:\n", sources)
-
-        eval_results = evaluate_answer(q, answer)
-        result = eval_results["correctness_score"].iloc[0]
-
-        print("\n=== Phoenix Eval Results ===")
-        print("Score:", result["score"])
-        print("Label:", result["label"])
-        print("Explanation:", result["explanation"])'''
 
 # What is hypertension?
 # What are the strategies for hypertension control?

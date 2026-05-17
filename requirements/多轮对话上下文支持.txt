@@ -1,0 +1,337 @@
+﻿# 多轮对话上下文支持需求文档
+
+## 1. 背景与目标
+
+当前系统在每一轮问答中仅将用户最新一条消息发送给后端（scripts/query.py），
+前端的完整对话历史被丢弃，导致：
+
+- 用户无法进行追问（如先问"What is hypertension?"再问"What are its symptoms?"，
+  系统不知道"its"指代什么）。
+- LLM 在生成答案时仅依赖检索到的文档片段，缺少对话上下文，输出生硬且缺乏
+  连贯性。
+- 无法支持多轮对话场景（如逐步缩小问题范围、澄清用户意图等）。
+
+本需求旨在为智能体引入多轮对话上下文支持，使系统能够在保留历史对话的
+基础上进行检索和生成，提升问答的连贯性与用户体验。
+
+## 2. 核心修改任务
+
+### 2.1 后端接口改造（app.py）
+
+问题描述：当前 /rag 接口只接收 query 字段，无法获取对话历史。
+
+执行要求：
+1. 将请求体解析扩展为同时接收 query 和 history（可选）字段。
+   - query（必填，string）：当前用户问题。
+   - history（选填，array）：历史消息列表，格式为 [{role, content}, ...]，
+     与前端 messages 数组中的 user/assistant 条目对齐。
+2. 将 history 转发给 ask_question(q, history=None)。
+
+### 2.2 检索问答模块改造（scripts/query.py）
+
+问题描述：ask_question(q) 仅接受单个问题字符串，Prompt 模板无对话历史
+占位符，无法利用历史信息指导检索和生成。
+
+执行要求：
+
+**2.2.1 扩展 ask_question 函数签名**
+```python
+def ask_question(q: str, history: list[dict] | None = None):
+```
+- history 格式示例：
+  ```json
+  [
+    {"role": "user", "content": "What is hypertension?"},
+    {"role": "assistant", "content": "Hypertension is..."}
+  ]
+  ```
+
+**2.2.2 增加上下文感知的查询重写（可选但推荐）**
+当 history 非空时，利用 LLM 对原始问题做上下文解析（Co-reference Resolution），
+将模糊指代替换为明确实体：
+
+- 实现 rewrite_query_with_context(q, history) -> str 函数。
+- 使用一个轻量 Prompt 让 LLM 将当前问题改写成自包含的独立查询。
+  - 输入：对话历史 + 当前问题。
+  - 输出：改写后的自包含查询。
+- 示例：
+  ```
+  History:
+  User: What is hypertension?
+  Assistant: Hypertension is a condition in which...
+  Current Query: "What are its symptoms?"
+  Rewritten: "What are the symptoms of hypertension?"
+  ```
+- 若 history 为空或 LLM 改写失败，直接返回原始查询（降级策略）。
+
+**2.2.3 扩展 Prompt 模板**
+在 Prompt 模板中增加对话历史占位符 {chat_history}：
+
+```python
+prompt = ChatPromptTemplate.from_template("""
+You are a medical assistant.
+
+STRICT RULES:
+- Answer ONLY using the provided context
+- If the answer is not clearly in the context, say "I don't know"
+- Be concise and factual
+- Do NOT make assumptions
+- If there is chat history, use it to understand the context of the question
+
+Chat History:
+{chat_history}
+
+Context:
+{context}
+
+Question:
+{question}
+
+Answer:
+""")
+```
+
+**2.2.4 调整检索策略（可选进阶）**
+当存在对话历史时，可对检索关键词做增强：
+- 将 rewrite_query_with_context 生成的改写查询用于 search() 和 rerank_docs()。
+- 原始查询仍保留在 {question} 占位符中以保持 LLM 生成时的问题完整性。
+
+### 2.3 前端 API 路由改造（frontend-ui/app/api/chat/route.ts）
+
+问题描述：当前路由仅提取最后一条用户消息发送给后端，完整 messages
+被丢弃。
+
+执行要求：
+1. 在构造后端请求体时，将完整 cleanMessages 数组传入 history 字段：
+   ```typescript
+   body: JSON.stringify({
+     query: lastUser?.content ?? "",
+     history: cleanMessages.slice(0, -1)  // 不含最后一条（当前问题）
+   })
+   ```
+2. history 中仅保留 role 和 content 字段，确保数据最小化。
+3. history 长度控制：根据后端 Prompt 模板的 token 容量，建议保留最近
+   N 轮（默认 N=5）的对话，超出部分截断（在 cleanMessages 上做 slice）。
+
+### 2.4 工程健壮性
+
+执行要求：
+1. 向后兼容：history 为可选参数，当不存在或为空时行为与当前完全一致。
+2. 异常降级：若查询重写或上下文注入失败，不影响主流程，仅输出警告日志
+   并回退到无上下文模式。
+3. 对话历史控制：对历史消息采用"轮数 + 字符数"双重截断机制，避免超过
+   LLM 上下文窗口：
+   a. 轮数截断：保留最近 CONTEXT_MAX_TURNS 轮（默认 5 轮，即最多 10 条消息）。
+   b. 字符数截断：将截断后的历史文本总长度限制在 CONTEXT_MAX_CHARS 以内
+      （默认 2000 字符），超出部分从历史尾部截断（保留最近的消息）。
+4. 环境变量配置：
+   - CONTEXT_MAX_TURNS：控制保留的最大对话轮数（默认 5）。
+   - CONTEXT_MAX_CHARS：控制历史文本的最大字符数（默认 2000）。
+   - ENABLE_QUERY_REWRITE：控制是否启用上下文查询重写（默认 true）。
+
+## 3. 交付物标准
+
+### 3.1 代码修改点清单
+
+| 文件 | 修改内容 |
+|------|----------|
+| app.py | /rag 接口新增 history 参数解析与转发 |
+| scripts/query.py | ask_question 签名扩展；新增 truncate_history、format_history、rewrite_query_with_context；Prompt 模板新增 {chat_history}；调用链传递 history；双重截断逻辑 |
+| frontend-ui/app/api/chat/route.ts | 请求体新增 history 字段，传入截断后的对话历史 |
+
+### 3.2 验证标准
+
+1. 向后兼容：不带 history 的请求行为与当前完全一致。
+2. 多轮对话连贯性：
+   - 第一问："What is hypertension?" -> 返回高血压定义。
+   - 第二问："What are its symptoms?"（携带第一轮历史） -> 返回高血压症状。
+   - 第二问若无历史上下文，应无法正确指向"hypertension"。
+3. 查询重写效果：
+   - 输入含指代（"its", "they", "this"等）的问题，改写后的查询应消除指代。
+   - 改写失败时，原始查询仍可用于检索（降级）。
+4. 上下文大小安全：无论历史多长，Prompt 中的 chat_history 不超过
+   CONTEXT_MAX_TURNS 轮，且字符数不超过 CONTEXT_MAX_CHARS。
+
+## 4. 参考代码片段（供 AI 生成时参考）
+
+### 4.1 修改后的 app.py
+```python
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from scripts.query import ask_question
+
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@app.post("/rag")
+async def rag(req: Request):
+    body = await req.json()
+    q = body.get("query", "")
+    history = body.get("history", None)
+
+    answer, docs = ask_question(q, history=history)
+
+    return {
+        "answer": answer,
+        "docs": docs
+    }
+```
+
+### 4.2 修改后的 ask_question（scripts/query.py 核心片段）
+```python
+import os
+
+# === 上下文控制参数 ===
+CONTEXT_MAX_TURNS = int(os.getenv("CONTEXT_MAX_TURNS", "5"))
+CONTEXT_MAX_CHARS = int(os.getenv("CONTEXT_MAX_CHARS", "2000"))
+ENABLE_QUERY_REWRITE = os.getenv("ENABLE_QUERY_REWRITE", "true").lower() == "true"
+
+
+def truncate_history(
+    history: list[dict] | None,
+    max_turns: int = CONTEXT_MAX_TURNS,
+    max_chars: int = CONTEXT_MAX_CHARS,
+) -> list[dict]:
+    """
+    对对话历史做双重截断：
+    1. 轮数截断：保留最近 max_turns 轮（每轮 = user + assistant）。
+    2. 字符数截断：将格式化后的历史文本限制在 max_chars 以内，
+       从历史尾部保留（最近的消息优先），确保不超过 LLM 上下文窗口。
+    """
+    if not history:
+        return []
+
+    # 第一步：轮数截断
+    max_messages = max_turns * 2
+    history = history[-max_messages:]
+
+    # 第二步：字符数截断（从尾部保留，丢弃最早的消息）
+    while True:
+        text = format_history(history)
+        if len(text) <= max_chars or len(history) <= 2:
+            break
+        # 丢弃最早的一轮（user + assistant）
+        history = history[2:]
+
+    return history
+
+
+def format_history(history: list[dict]) -> str:
+    """将历史消息列表格式化为 LLM 可读的文本"""
+    if not history:
+        return "None"
+    lines = []
+    for m in history:
+        role = m.get("role", "unknown")
+        content = m.get("content", "")
+        lines.append(f"{role.capitalize()}: {content}")
+    return "\n".join(lines)
+
+
+def rewrite_query_with_context(q: str, history: list[dict]) -> str:
+    """利用 LLM 将带上下文指代的问题改写为自包含的独立查询"""
+    if not history or not ENABLE_QUERY_REWRITE:
+        return q
+
+    rewrite_prompt = ChatPromptTemplate.from_template("""
+Given the conversation history and the user's latest question, rewrite the question
+so that it is self-contained and does not rely on pronouns or references from the history.
+If the question is already self-contained, return it as-is.
+
+History:
+{history}
+
+Question: {question}
+
+Rewritten Question:
+""")
+
+    try:
+        history_text = format_history(history)
+        chain = rewrite_prompt | llm | StrOutputParser()
+        rewritten = chain.invoke({"history": history_text, "question": q})
+        logger.debug("Query rewritten: %s -> %s", q, rewritten.strip())
+        return rewritten.strip()
+    except Exception as exc:
+        logger.warning("Query rewrite failed: %s, falling back to original query", exc)
+        return q
+
+
+def ask_question(q: str, history: list[dict] | None = None):
+    history = truncate_history(history)
+
+    # 上下文感知查询重写
+    search_query = rewrite_query_with_context(q, history) if history else q
+
+    # 检索（使用改写后的查询以提升召回精度）
+    docs = retriever.invoke(search_query)
+
+    context = "\n\n".join([d.page_content for d in docs])
+    chat_history_text = format_history(history)
+
+    answer = (prompt | llm | StrOutputParser()).invoke({
+        "context": context,
+        "question": q,         # 保留原始问题
+        "chat_history": chat_history_text,
+    })
+
+    return answer, docs
+```
+
+### 4.3 修改后的前端路由（route.ts 核心片段）
+```typescript
+export async function POST(req: Request) {
+  const { messages } = await req.json();
+
+  const cleanMessages = normalizeMessages(messages);
+  const lastUser = cleanMessages.filter((m) => m.role === "user").at(-1);
+
+  // 提取历史消息（不含最后一条当前问题）
+  const history = cleanMessages.slice(0, -1).map(({ role, content }) => ({
+    role,
+    content,
+  }));
+
+  const ragRes = await fetch("http://127.0.0.1:8000/rag", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      query: lastUser?.content ?? "",
+      history: history
+    })
+  });
+
+  // ... 后续处理保持不变
+}
+```
+
+## 5. 执行步骤
+
+1. 修改 app.py：/rag 接口新增 history 参数。
+2. 修改 scripts/query.py：
+   a. 新增 truncate_history（含双重截断逻辑）、format_history、rewrite_query_with_context 函数。
+   b. 扩展 ask_question 签名，集成上下文感知检索与生成。
+   c. 更新 Prompt 模板，新增 {chat_history} 占位符。
+3. 修改 frontend-ui/app/api/chat/route.ts：请求体新增 history 字段。
+4. 端到端验证：第一轮提问，第二轮带指代追问，确认回答正确利用了上下文。
+
+## 6. 风险与注意事项
+
+- Token 消耗增加：每轮对话的 Prompt 中会附加历史消息，LLM 延迟和内存
+  开销将上升。建议监控 Ollama 的实际延迟，必要时降低 CONTEXT_MAX_TURNS
+  或 CONTEXT_MAX_CHARS。
+- 历史污染风险：若用户在前几轮中得到了不准确的答案，LLM 可能被错误的
+  上下文误导。查询重写环节可在一定程度上缓解此问题。
+- 重写延迟：rewrite_query_with_context 额外调用一次 LLM，增加约 1-2 秒
+  的响应延迟。可通过 ENABLE_QUERY_REWRITE=false 关闭。
+- Ollama 并发：查询重写与最终生成共用同一个 llm 实例，需注意并发
+  场景下的负载；单用户场景无影响。
+- 双重截断取舍：字符数截断优先丢弃最早对话，若历史中有重要上下文因此
+  丢失，可在后续版本中考虑引入摘要（Summarization）机制替代简单截断。

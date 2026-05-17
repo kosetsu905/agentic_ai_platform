@@ -1,4 +1,4 @@
-import {
+﻿import {
   createUIMessageStream,
   createUIMessageStreamResponse,
 } from "ai";
@@ -32,11 +32,18 @@ export async function POST(req: Request) {
 
   const lastUser = cleanMessages.filter((m) => m.role === "user").at(-1);
 
+  // 提取历史消息（不含最后一条当前问题）
+  const history = cleanMessages.slice(0, -1).map(({ role, content }) => ({
+    role,
+    content,
+  }));
+
   const ragRes = await fetch("http://127.0.0.1:8000/rag", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      query: lastUser?.content ?? ""
+      query: lastUser?.content ?? "",
+      history: history
     })
   });
 
