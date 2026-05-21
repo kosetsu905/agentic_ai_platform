@@ -1,8 +1,9 @@
-import {
+﻿import {
   ComposerAddAttachment,
   ComposerAttachments,
   UserMessageAttachments,
 } from "@/components/attachment";
+import { VoiceInputButton } from "@/components/voice-input";
 import { MarkdownText } from "@/components/markdown-text";
 import { ToolFallback } from "@/components/tool-fallback";
 import { TooltipIconButton } from "@/components/tooltip-icon-button";
@@ -185,6 +186,7 @@ const ComposerAction: FC = () => {
   return (
     <div className="aui-composer-action-wrapper relative flex items-center justify-between">
       <ComposerAddAttachment />
+      <VoiceInputButton />
       <AuiIf condition={(s) => !s.thread.isRunning}>
         <ComposerPrimitive.Send asChild>
           <TooltipIconButton

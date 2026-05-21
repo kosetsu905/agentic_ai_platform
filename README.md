@@ -17,6 +17,7 @@ Install these tools before setting up the project:
 - Node.js 20 or newer
 - Docker Desktop
 - Ollama
+- FFmpeg (required for voice input transcription)
 
 ## Environment Variables
 
@@ -31,6 +32,11 @@ CONTEXT_MAX_TURNS=5
 CONTEXT_MAX_CHARS=2000
 ENABLE_QUERY_REWRITE=true
 ```
+
+# Voice input (optional, uses local Whisper)
+WHISPER_MODEL=small          # tiny / base / small / medium / large, default: small
+WHISPER_LANGUAGE=            # set to "zh" to force Chinese, empty = auto-detect
+HF_ENDPOINT=https://hf-mirror.com  # Hugging Face mirror (useful in mainland China)
 
 `SERPER_API_KEY` is used by the web search wrapper in the backend. Do not commit real API keys.
 
