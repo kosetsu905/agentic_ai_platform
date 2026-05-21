@@ -27,13 +27,12 @@ Create a `.env` file in the project root:
 OPENAI_API_KEY=your_openai_api_key
 SERPER_API_KEY=your_serper_api_key
 
-`SERPER_API_KEY` is used by the web search wrapper in the backend. Do not commit real API keys.
-
 ## Multi-turn context (see "Multi-turn Conversation Context" section below)
 CONTEXT_MAX_TURNS=5
 CONTEXT_MAX_CHARS=2000
 ENABLE_QUERY_REWRITE=true
 ```
+`SERPER_API_KEY` is used by the web search wrapper in the backend. Do not commit real API keys.
 
 ## Voice input (optional, uses local Whisper)
 ```
